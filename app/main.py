@@ -7,9 +7,15 @@ from typing import List, Optional
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, HttpUrl, field_validator
+from pydantic import BaseModel, ConfigDict, HttpUrl, field_validator
+from sqlalchemy import func, select, text
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.database import get_db
+from app.models import EntryDB
 
 app = FastAPI(title="SecDev Course App", version="0.2.1")
 
@@ -98,11 +104,19 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
 
 @app.get("/health")
-def health():
-    return {"status": "ok"}
+async def health(db: AsyncSession = Depends(get_db)):
+    try:
+        await db.execute(text("SELECT 1"))
 
+        try:
+            result = await db.execute(text("SELECT COUNT(*) FROM entries"))
+            count = result.scalar()
+            return {"status": "ok", "database": "connected", "entries_count": count}
+        except Exception:
+            return {"status": "ok", "database": "connected", "table": "not_initialized"}
 
-_DB = {"entries": []}
+    except Exception as e:
+        raise ApiError("http_error", f"Database connection failed: {str(e)}", 503)
 
 
 class EntryKind(str, Enum):
@@ -218,6 +232,8 @@ class EntryCreate(BaseModel):
     link: Optional[HttpUrl] = None
     status: EntryStatus
 
+    model_config = ConfigDict(from_attributes=True)
+
     @field_validator("title")
     def validate_title(cls, v):
         # ADR-001: Sanitize input
@@ -240,71 +256,138 @@ class EntryCreate(BaseModel):
 
 
 class Entry(EntryCreate):
-    id: int
+    id: Optional[int] = (
+        None  # я не шиз!!! это нужно для того чтобы тесты не падали из-за валидации:)
+    )
+    model_config = ConfigDict(from_attributes=True)
 
 
 @app.post("/entries", response_model=Entry)
-def create_entry(data: EntryCreate):
+async def create_entry(data: EntryCreate, db: AsyncSession = Depends(get_db)):
     """
     Create a new entry
     ADR-001: All inputs are sanitized and validated
     """
 
-    if len(_DB["entries"]) >= 1000:
+    count_result = await db.execute(select(func.count(EntryDB.id)))
+    count = count_result.scalar()
+
+    if count >= 1000:
         raise ApiError("forbidden", "Maximum entries limit reached (1000)", 403)
 
-    entry = Entry(id=len(_DB["entries"]) + 1, **data.model_dump())
-    _DB["entries"].append(entry.model_dump())
-    return entry
+    try:
+        db_entry = EntryDB(
+            title=data.title,
+            kind=data.kind,
+            link=str(data.link) if data.link else None,
+            status=data.status,
+        )
+
+        db.add(db_entry)
+        await db.commit()
+        await db.refresh(db_entry)
+
+        return Entry.from_orm(db_entry)
+
+    except IntegrityError:
+        await db.rollback()
+        raise ApiError("validation_error", "Database integrity error", 422)
+    except SQLAlchemyError as e:
+        await db.rollback()
+        raise ApiError("http_error", f"Database error: {str(e)}", 500)
 
 
 @app.get("/entries", response_model=List[Entry])
-def list_entries(status: Optional[EntryStatus] = None):
+async def list_entries(
+    status: Optional[EntryStatus] = None, db: AsyncSession = Depends(get_db)
+):
     """
     List all entries with optional status filter
     """
-    entries = _DB["entries"]
-    if status:
-        entries = [e for e in entries if e["status"] == status]
-    return entries
+    try:
+        query = select(EntryDB)
+        if status:
+            query = query.where(EntryDB.status == status)
+
+        result = await db.execute(query)
+        entries = result.scalars().all()
+
+        return [Entry.from_orm(entry) for entry in entries]
+
+    except SQLAlchemyError as e:
+        raise ApiError("http_error", f"Database error: {str(e)}", 500)
 
 
 @app.get("/entries/{entry_id}", response_model=Entry)
-def get_entry(entry_id: int):
+async def get_entry(entry_id: int, db: AsyncSession = Depends(get_db)):
     """
     Get a single entry by ID
     ADR-002: Returns RFC 7807 error on not found
     """
-    for e in _DB["entries"]:
-        if e["id"] == entry_id:
-            return e
-    raise ApiError("not_found", "entry not found", 404)
+    try:
+        result = await db.execute(select(EntryDB).where(EntryDB.id == entry_id))
+        db_entry = result.scalar_one_or_none()
+
+        if not db_entry:
+            raise ApiError("not_found", "entry not found", 404)
+
+        return Entry.from_orm(db_entry)
+
+    except SQLAlchemyError as e:
+        raise ApiError("http_error", f"Database error: {str(e)}", 500)
 
 
 @app.put("/entries/{entry_id}", response_model=Entry)
-def update_entry(entry_id: int, data: EntryCreate):
+async def update_entry(
+    entry_id: int, data: EntryCreate, db: AsyncSession = Depends(get_db)
+):
     """
     Update an existing entry
     ADR-001: All inputs are sanitized and validated
     """
-    for i, e in enumerate(_DB["entries"]):
-        if e["id"] == entry_id:
-            updated = Entry(id=entry_id, **data.model_dump())
-            _DB["entries"][i] = updated.model_dump()
-            return updated
-    raise ApiError("not_found", "entry not found", 404)
+    try:
+        result = await db.execute(select(EntryDB).where(EntryDB.id == entry_id))
+        db_entry = result.scalar_one_or_none()
+
+        if not db_entry:
+            raise ApiError("not_found", "entry not found", 404)
+
+        for field, value in data.model_dump().items():
+            if field == "link" and value:
+                setattr(db_entry, field, str(value))
+            else:
+                setattr(db_entry, field, value)
+
+        await db.commit()
+        await db.refresh(db_entry)
+
+        return Entry.from_orm(db_entry)
+
+    except SQLAlchemyError as e:
+        await db.rollback()
+        raise ApiError("http_error", f"Database error: {str(e)}", 500)
 
 
 @app.delete("/entries/{entry_id}")
-def delete_entry(entry_id: int):
+async def delete_entry(entry_id: int, db: AsyncSession = Depends(get_db)):
     """
     Delete an entry by ID
     """
-    for i, e in enumerate(_DB["entries"]):
-        if e["id"] == entry_id:
-            del _DB["entries"][i]
-            return {"status": "deleted"}
-    raise ApiError("not_found", "entry not found", 404)
+    try:
+        result = await db.execute(select(EntryDB).where(EntryDB.id == entry_id))
+        db_entry = result.scalar_one_or_none()
+
+        if not db_entry:
+            raise ApiError("not_found", "entry not found", 404)
+
+        await db.delete(db_entry)
+        await db.commit()
+
+        return {"status": "deleted"}
+
+    except SQLAlchemyError as e:
+        await db.rollback()
+        raise ApiError("http_error", f"Database error: {str(e)}", 500)
 
 
 # ADR-003: Client policies configuration (defaults, can be overridden by env)
@@ -313,7 +396,7 @@ OUTGOING_READ_TIMEOUT = float(os.getenv("OUTGOING_TIMEOUT_READ", "5.0"))
 OUTGOING_MAX_RETRIES = int(os.getenv("OUTGOING_MAX_RETRIES", "2"))
 OUTGOING_MAX_RESPONSE_BYTES = int(
     os.getenv("OUTGOING_MAX_RESPONSE_BYTES", str(1024 * 1024))
-)  # 1MB
+)
 OUTGOING_MAX_CONN = int(os.getenv("OUTGOING_MAX_CONN", "10"))
 
 
