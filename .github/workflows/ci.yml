@@ -113,8 +113,8 @@ jobs:
 
       - name: Wait for service healthy (HTTP /health)
         run: |
-          docker compose build --no-cache --progress=plain
-          docker compose up --build --profile dev -d
+          docker compose --progress=plain build --no-cache
+          docker compose --profile dev up --build -d
 
           MAX_RETRIES=40
           i=0
