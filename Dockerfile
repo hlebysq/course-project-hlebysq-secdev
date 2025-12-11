@@ -9,24 +9,28 @@ RUN pip wheel --no-cache-dir -r requirements.txt -w /wheels
 # ===== Test stage =====
 FROM python:3.11.9-slim@sha256:7cd0079a9bd8800c81632d65251048fc2848bf9afda542224b1b10e0cae45575 AS test
 WORKDIR /app
-COPY . .
-COPY requirements-dev.txt ./
 
-RUN pip install --no-cache-dir -r requirements-dev.txt
-RUN pytest -q
+COPY . .
+COPY requirements.txt requirements-dev.txt ./
+
+RUN pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir -r requirements-dev.txt \
+    && mkdir -p alembic/versions \
+    && pytest -q
 
 # ===== Runtime stage =====
 FROM python:3.11.9-slim@sha256:7cd0079a9bd8800c81632d65251048fc2848bf9afda542224b1b10e0cae45575 AS runtime
 WORKDIR /app
 
+# hadolint ignore=DL3008
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
-
-RUN groupadd -r appuser -g 1001 && \
+    apt-get install -y --no-install-recommends curl ca-certificates && \
+    rm -rf /var/lib/apt/lists/* && \
+    groupadd -r appuser -g 1001 && \
     useradd -r -u 1001 -g appuser appuser
 
 COPY --from=build /wheels /wheels
+COPY requirements.txt ./
 RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.txt
 
 COPY --from=test /app /app
