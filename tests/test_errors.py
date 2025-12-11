@@ -3,54 +3,10 @@ ADR-002: RFC 7807 Error Handling Tests
 Covers: NFR-001, Risk R4
 """
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
-from httpx import ASGITransport, AsyncClient
 from sqlalchemy.exc import SQLAlchemyError
-
-from app.main import app
-from app.models import EntryDB
-
-
-@pytest.fixture
-def mock_db():
-    db = AsyncMock()
-    db.execute = AsyncMock()
-    db.commit = AsyncMock()
-    db.refresh = AsyncMock()
-    db.delete = AsyncMock()
-    db.rollback = AsyncMock()
-    db.add = MagicMock()
-    return db
-
-
-@pytest.fixture
-async def client(mock_db):
-    async def override_get_db():
-        yield mock_db
-
-    from app.database import get_db
-
-    app.dependency_overrides[get_db] = override_get_db
-
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as ac:
-        yield ac
-
-    app.dependency_overrides.clear()
-
-
-def create_mock_entry(entry_id=1, title="Test Book"):
-    """Создает мок EntryDB объекта"""
-    entry = MagicMock(spec=EntryDB)
-    entry.id = entry_id
-    entry.title = title
-    entry.kind = "book"
-    entry.link = "https://example.com"
-    entry.status = "planned"
-    return entry
 
 
 class TestRFC7807Format:
@@ -59,7 +15,8 @@ class TestRFC7807Format:
     @pytest.mark.asyncio
     async def test_not_found_rfc7807_structure(self, client, mock_db):
         """Not found error should follow RFC 7807 format"""
-        mock_result = AsyncMock()
+        # Настраиваем мок для возврата None (запись не найдена)
+        mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = None
         mock_db.execute.return_value = mock_result
 
@@ -103,7 +60,7 @@ class TestRFC7807Format:
     @pytest.mark.asyncio
     async def test_correlation_id_is_uuid(self, client, mock_db):
         """Correlation ID should be a valid UUID format"""
-        mock_result = AsyncMock()
+        mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = None
         mock_db.execute.return_value = mock_result
 
@@ -118,7 +75,7 @@ class TestRFC7807Format:
     @pytest.mark.asyncio
     async def test_correlation_id_in_response_header(self, client, mock_db):
         """Correlation ID should also be in response headers"""
-        mock_result = AsyncMock()
+        mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = None
         mock_db.execute.return_value = mock_result
 
@@ -133,7 +90,7 @@ class TestRFC7807Format:
     @pytest.mark.asyncio
     async def test_correlation_id_unique_per_request(self, client, mock_db):
         """Each request should get a unique correlation ID"""
-        mock_result = AsyncMock()
+        mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = None
         mock_db.execute.return_value = mock_result
 
@@ -152,7 +109,7 @@ class TestErrorTypes:
     @pytest.mark.asyncio
     async def test_not_found_error_type(self, client, mock_db):
         """Not found should have correct type URI"""
-        mock_result = AsyncMock()
+        mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = None
         mock_db.execute.return_value = mock_result
 
@@ -191,7 +148,7 @@ class TestErrorDetailMasking:
     @pytest.mark.asyncio
     async def test_not_found_no_internal_details(self, client, mock_db):
         """Not found error should not leak internal implementation details"""
-        mock_result = AsyncMock()
+        mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = None
         mock_db.execute.return_value = mock_result
 
@@ -208,7 +165,7 @@ class TestErrorDetailMasking:
     @pytest.mark.asyncio
     async def test_error_has_user_friendly_message(self, client, mock_db):
         """Errors should have user-friendly messages"""
-        mock_result = AsyncMock()
+        mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = None
         mock_db.execute.return_value = mock_result
 
@@ -225,7 +182,7 @@ class TestErrorConsistency:
     @pytest.mark.asyncio
     async def test_get_not_found_consistent(self, client, mock_db):
         """GET not found should follow standard format"""
-        mock_result = AsyncMock()
+        mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = None
         mock_db.execute.return_value = mock_result
 
@@ -237,7 +194,7 @@ class TestErrorConsistency:
     @pytest.mark.asyncio
     async def test_put_not_found_consistent(self, client, mock_db):
         """PUT not found should follow standard format"""
-        mock_result = AsyncMock()
+        mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = None
         mock_db.execute.return_value = mock_result
 
@@ -250,7 +207,7 @@ class TestErrorConsistency:
     @pytest.mark.asyncio
     async def test_delete_not_found_consistent(self, client, mock_db):
         """DELETE not found should follow standard format"""
-        mock_result = AsyncMock()
+        mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = None
         mock_db.execute.return_value = mock_result
 
@@ -287,8 +244,8 @@ class TestDatabaseErrorHandling:
     @pytest.mark.asyncio
     async def test_database_error_on_create(self, client, mock_db):
         """Test database error during entry creation"""
-        mock_count_result = AsyncMock()
-        mock_count_result.scalar.return_value = 0
+        mock_count_result = MagicMock()
+        mock_count_result.scalar.return_value = 5
         mock_db.execute.return_value = mock_count_result
 
         mock_db.commit.side_effect = SQLAlchemyError("DB error")
@@ -300,12 +257,16 @@ class TestDatabaseErrorHandling:
         body = r.json()
         assert "type" in body
         assert "correlationId" in body
+        assert "database error" in body["detail"].lower()
 
     @pytest.mark.asyncio
-    async def test_update_calls_rollback_on_error(self, client, mock_db):
+    async def test_update_calls_rollback_on_error(
+        self, client, mock_db, create_mock_entry
+    ):
         """Test that rollback is called when update fails"""
         mock_entry = create_mock_entry()
-        mock_result = AsyncMock()
+
+        mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = mock_entry
         mock_db.execute.return_value = mock_result
 
@@ -316,3 +277,6 @@ class TestDatabaseErrorHandling:
 
         mock_db.rollback.assert_called_once()
         assert r.status_code == 500
+        body = r.json()
+        assert "type" in body
+        assert "database error" in body["detail"].lower()

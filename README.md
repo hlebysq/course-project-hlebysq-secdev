@@ -1,6 +1,6 @@
-# SecDev Course Template
+# SecDev Course
 
-Стартовый шаблон для студенческого репозитория (HSE SecDev 2025).
+Репозиторий с основным проектом по Разработке Безопасного Программного Обеспечения.
 
 ## Быстрый старт
 ```bash
@@ -31,23 +31,148 @@ Badge добавится автоматически после загрузки 
 
 ## Контейнеры
 ```bash
-docker build -t secdev-app .
-docker run --rm -p 8000:8000 secdev-app
-# или
-docker compose up --build
+docker-compose build
+docker-compose --profile dev up -d
+docker-compose exec app alembic upgrade head
 ```
 
 ## Эндпойнты
-- `GET /health` → `{"status": "ok"}`
-- `POST /items?name=...` — демо-сущность
-- `GET /items/{id}`
 
-## Формат ошибок
-Все ошибки — JSON-обёртка:
-```json
+### `GET /health`
+
+Проверка состояния сервиса и БД.
+
+**Пример ответа:**
+
+``` json
 {
-  "error": {"code": "not_found", "message": "item not found"}
+  "status": "ok",
+  "database": "connected",
+  "entries_count": 42
 }
 ```
+
+------------------------------------------------------------------------
+
+### `POST /entries`
+
+Создаёт новую запись.
+
+**Поля запроса:** - `title` --- строка (1--200 символов),
+автоматически: - триммируется, - нормализуется, - очищается от опасных
+символов, - проверяется на XSS-паттерны. - `kind` --- одно из: -
+`"book"` - `"article"` - `"other"` - `link` --- `http(s)` URL, проходит
+строгую SSRF-валидацию (запрещены localhost, приватные сети, `file://`,
+path traversal). - `status` --- `"planned" | "reading" | "done"`
+
+**Пример успешного ответа:**
+
+``` json
+{
+  "id": 1,
+  "title": "Example",
+  "kind": "book",
+  "link": "https://example.com",
+  "status": "planned"
+}
+```
+
+------------------------------------------------------------------------
+
+### `GET /entries`
+
+Список всех записей.
+
+**Параметры:** - `status` --- необязательный фильтр
+(`planned|reading|done`)
+
+**Пример ответа:**
+
+``` json
+[
+  {
+    "id": 1,
+    "title": "Example",
+    "kind": "book",
+    "link": "https://example.com",
+    "status": "reading"
+  }
+]
+```
+
+------------------------------------------------------------------------
+
+### `GET /entries/{id}`
+
+Возвращает запись по ID.
+
+**Пример ответа:**
+
+``` json
+{
+  "id": 1,
+  "title": "Example",
+  "kind": "article",
+  "link": "https://example.com",
+  "status": "done"
+}
+```
+
+------------------------------------------------------------------------
+
+### `PUT /entries/{id}`
+
+Полностью обновляет запись (все поля как в `POST /entries`).
+
+------------------------------------------------------------------------
+
+### `DELETE /entries/{id}`
+
+Удаляет запись.
+
+**Пример ответа:**
+
+``` json
+{"status": "deleted"}
+```
+
+------------------------------------------------------------------------
+
+### `POST /fetch`
+
+Безопасный HTTP-клиент (SSRF-защита, лимиты, retries).
+
+**Тело:**
+
+``` json
+{"url": "https://example.com"}
+```
+
+**Пример ответа:**
+
+``` json
+{
+  "status": 200,
+  "content_snippet": "<!doctype html>..."
+}
+```
+
+------------------------------------------------------------------------
+
+## Формат ошибок (RFC 7807)
+
+Все ошибки возвращаются в формате RFC 7807 + correlation ID:
+
+``` json
+{
+  "type": "https://api.secdev.com/errors/not-found",
+  "title": "Resource Not Found",
+  "status": 404,
+  "detail": "entry not found",
+  "instance": "/entries/999",
+  "correlationId": "7f8b1c75-9a33-4a32-a7d9-1b9d8d4af001"
+}
+```
+
 
 См. также: `SECURITY.md`, `.pre-commit-config.yaml`, `.github/workflows/ci.yml`.
