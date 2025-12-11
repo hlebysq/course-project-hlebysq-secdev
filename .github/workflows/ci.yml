@@ -12,6 +12,21 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    services:
+      db:
+        image: postgres:15
+        env:
+          POSTGRES_DB: secdev_app
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - uses: actions/checkout@v4
 
@@ -33,6 +48,83 @@ jobs:
 
       - name: Tests
         run: pytest -q
-
       - name: Pre-commit (all files)
         run: pre-commit run --all-files
+
+
+
+      - name: Lint Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+
+      - name: Build Docker image
+        run: |
+          IMAGE_NAME=secdev-app:ci
+          docker build -t $IMAGE_NAME .
+
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          image-ref: secdev-app:ci
+          format: 'table'
+          output: 'trivy-report.txt'
+        continue-on-error: true
+
+      - name: Upload Trivy report
+        uses: actions/upload-artifact@v3
+        with:
+          name: trivy-report
+          path: trivy-report.txt
+
+      - name: Generate SBOM with Syft
+        run: |
+          IMAGE_NAME=secdev-app:ci
+          syft $IMAGE_NAME -o json > sbom.json
+        continue-on-error: true
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v3
+        with:
+          name: sbom
+          path: sbom.json
+
+      - name: Scan image with Grype
+        run: |
+          IMAGE_NAME=secdev-app:ci
+          grype $IMAGE_NAME -o json > grype-report.json
+        continue-on-error: true
+
+      - name: Upload Grype report
+        uses: actions/upload-artifact@v3
+        with:
+          name: grype-report
+          path: grype-report.json
+
+      - name: Assert container runs as non-root user
+        run: |
+          IMAGE_NAME=secdev-app:ci
+          USER_ID=$(docker run --rm $IMAGE_NAME id -u)
+          if [ "$USER_ID" -eq 0 ]; then
+            echo "Container runs as root!"
+            exit 1
+          fi
+          echo "Non-root user verified: UID=$USER_ID"
+
+      - name: Wait for service healthy (HTTP /health)
+        run: |
+          IMAGE_NAME=secdev-app:ci
+          docker run -d --name secdev-ci -p 8000:8000 --env DATABASE_URL="postgresql+asyncpg://postgres:password@db:5432/secdev_app" $IMAGE_NAME
+          for i in {1..20}; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/health || echo "000")
+            if [ "$STATUS" -eq 200 ]; then
+              echo "Service healthy"
+              docker stop secdev-ci
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "Service did not become healthy"
+          docker logs secdev-ci
+          docker stop secdev-ci
+          exit 1
