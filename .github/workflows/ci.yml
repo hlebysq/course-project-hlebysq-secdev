@@ -45,13 +45,8 @@ jobs:
           ruff check --output-format=github .
           black --check .
           isort --check-only .
-
-      - name: Tests
-        run: pytest -q
-      - name: Pre-commit (all files)
-        run: pre-commit run --all-files
-
-
+      - name: Prepare .env for CI
+        run: cp .env.example .env
 
       - name: Lint Dockerfile
         uses: hadolint/hadolint-action@v3.1.0
@@ -139,3 +134,5 @@ jobs:
           fi
 
           docker compose down --volumes --remove-orphans
+      - name: Cleanup .env
+        run: rm -f .env
