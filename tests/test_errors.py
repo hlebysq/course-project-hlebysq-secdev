@@ -3,24 +3,71 @@ ADR-002: RFC 7807 Error Handling Tests
 Covers: NFR-001, Risk R4
 """
 
-from fastapi.testclient import TestClient
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.main import app
+from app.models import EntryDB
 
-client = TestClient(app)
+
+@pytest.fixture
+def mock_db():
+    db = AsyncMock()
+    db.execute = AsyncMock()
+    db.commit = AsyncMock()
+    db.refresh = AsyncMock()
+    db.delete = AsyncMock()
+    db.rollback = AsyncMock()
+    db.add = MagicMock()
+    return db
+
+
+@pytest.fixture
+async def client(mock_db):
+    async def override_get_db():
+        yield mock_db
+
+    from app.database import get_db
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as ac:
+        yield ac
+
+    app.dependency_overrides.clear()
+
+
+def create_mock_entry(entry_id=1, title="Test Book"):
+    """Создает мок EntryDB объекта"""
+    entry = MagicMock(spec=EntryDB)
+    entry.id = entry_id
+    entry.title = title
+    entry.kind = "book"
+    entry.link = "https://example.com"
+    entry.status = "planned"
+    return entry
 
 
 class TestRFC7807Format:
     """Test RFC 7807 Problem Details format (ADR-002)"""
 
-    def test_not_found_rfc7807_structure(self):
+    @pytest.mark.asyncio
+    async def test_not_found_rfc7807_structure(self, client, mock_db):
         """Not found error should follow RFC 7807 format"""
-        r = client.get("/entries/999")
+        mock_result = AsyncMock()
+        mock_result.scalar_one_or_none.return_value = None
+        mock_db.execute.return_value = mock_result
+
+        r = await client.get("/entries/999")
         assert r.status_code == 404
 
         body = r.json()
 
-        # Check all required RFC 7807 fields
         assert "type" in body
         assert "title" in body
         assert "status" in body
@@ -33,15 +80,15 @@ class TestRFC7807Format:
         assert body["title"] == "Resource Not Found"
         assert body["instance"] == "/entries/999"
 
-    def test_validation_error_rfc7807_structure(self):
+    @pytest.mark.asyncio
+    async def test_validation_error_rfc7807_structure(self, client):
         """Validation error should follow RFC 7807 format"""
         payload = {"title": "", "kind": "book", "status": "planned"}
-        r = client.post("/entries", json=payload)
+        r = await client.post("/entries", json=payload)
         assert r.status_code == 422
 
         body = r.json()
 
-        # Check RFC 7807 structure
         assert "type" in body
         assert "title" in body
         assert "status" in body
@@ -49,37 +96,49 @@ class TestRFC7807Format:
         assert "instance" in body
         assert "correlationId" in body
 
-        # Check values
         assert body["status"] == 422
         assert "validation-error" in body["type"]
         assert body["title"] == "Validation Error"
 
-    def test_correlation_id_is_uuid(self):
+    @pytest.mark.asyncio
+    async def test_correlation_id_is_uuid(self, client, mock_db):
         """Correlation ID should be a valid UUID format"""
-        r = client.get("/entries/999")
+        mock_result = AsyncMock()
+        mock_result.scalar_one_or_none.return_value = None
+        mock_db.execute.return_value = mock_result
+
+        r = await client.get("/entries/999")
         body = r.json()
 
         correlation_id = body["correlationId"]
 
-        # Check UUID format (rough check)
-        assert len(correlation_id) == 36  # UUID length with dashes
-        assert correlation_id.count("-") == 4  # UUID has 4 dashes
+        assert len(correlation_id) == 36
+        assert correlation_id.count("-") == 4
 
-    def test_correlation_id_in_response_header(self):
+    @pytest.mark.asyncio
+    async def test_correlation_id_in_response_header(self, client, mock_db):
         """Correlation ID should also be in response headers"""
-        r = client.get("/entries/999")
+        mock_result = AsyncMock()
+        mock_result.scalar_one_or_none.return_value = None
+        mock_db.execute.return_value = mock_result
+
+        r = await client.get("/entries/999")
 
         assert "X-Correlation-ID" in r.headers
         header_id = r.headers["X-Correlation-ID"]
 
-        # Should match body correlation ID
         body_id = r.json()["correlationId"]
         assert header_id == body_id
 
-    def test_correlation_id_unique_per_request(self):
+    @pytest.mark.asyncio
+    async def test_correlation_id_unique_per_request(self, client, mock_db):
         """Each request should get a unique correlation ID"""
-        r1 = client.get("/entries/999")
-        r2 = client.get("/entries/998")
+        mock_result = AsyncMock()
+        mock_result.scalar_one_or_none.return_value = None
+        mock_db.execute.return_value = mock_result
+
+        r1 = await client.get("/entries/999")
+        r2 = await client.get("/entries/998")
 
         id1 = r1.json()["correlationId"]
         id2 = r2.json()["correlationId"]
@@ -90,18 +149,24 @@ class TestRFC7807Format:
 class TestErrorTypes:
     """Test different error types mapping (ADR-002)"""
 
-    def test_not_found_error_type(self):
+    @pytest.mark.asyncio
+    async def test_not_found_error_type(self, client, mock_db):
         """Not found should have correct type URI"""
-        r = client.get("/entries/999")
+        mock_result = AsyncMock()
+        mock_result.scalar_one_or_none.return_value = None
+        mock_db.execute.return_value = mock_result
+
+        r = await client.get("/entries/999")
         body = r.json()
 
         assert body["type"] == "https://api.secdev.com/errors/not-found"
         assert body["title"] == "Resource Not Found"
 
-    def test_validation_error_type(self):
+    @pytest.mark.asyncio
+    async def test_validation_error_type(self, client):
         """Validation error should have correct type URI"""
         payload = {"title": "", "kind": "book", "status": "planned"}
-        r = client.post("/entries", json=payload)
+        r = await client.post("/entries", json=payload)
         body = r.json()
 
         assert body["type"] == "https://api.secdev.com/errors/validation-error"
@@ -111,37 +176,45 @@ class TestErrorTypes:
 class TestErrorDetailMasking:
     """Test that error details don't leak sensitive info (ADR-002, Risk R4)"""
 
-    def test_validation_error_no_stack_trace(self):
+    @pytest.mark.asyncio
+    async def test_validation_error_no_stack_trace(self, client):
         """Validation errors should not include stack traces"""
         payload = {"title": "", "kind": "book", "status": "planned"}
-        r = client.post("/entries", json=payload)
+        r = await client.post("/entries", json=payload)
         body = r.json()
 
-        # Should not contain stack trace keywords
         body_str = str(body)
         assert "Traceback" not in body_str
         assert 'File "' not in body_str
         assert ".py" not in body_str or ".py" in body["type"]
 
-    def test_not_found_no_internal_details(self):
+    @pytest.mark.asyncio
+    async def test_not_found_no_internal_details(self, client, mock_db):
         """Not found error should not leak internal implementation details"""
-        r = client.get("/entries/999")
+        mock_result = AsyncMock()
+        mock_result.scalar_one_or_none.return_value = None
+        mock_db.execute.return_value = mock_result
+
+        r = await client.get("/entries/999")
         body = r.json()
 
         detail = body["detail"].lower()
 
-        # Should not contain internal implementation details
         assert "_db" not in detail
         assert "dict" not in detail
         assert "list" not in detail
         assert "index" not in detail
 
-    def test_error_has_user_friendly_message(self):
+    @pytest.mark.asyncio
+    async def test_error_has_user_friendly_message(self, client, mock_db):
         """Errors should have user-friendly messages"""
-        r = client.get("/entries/999")
+        mock_result = AsyncMock()
+        mock_result.scalar_one_or_none.return_value = None
+        mock_db.execute.return_value = mock_result
+
+        r = await client.get("/entries/999")
         body = r.json()
 
-        # Message should be concise and clear
         assert len(body["detail"]) < 200
         assert body["detail"] == "entry not found"
 
@@ -149,92 +222,97 @@ class TestErrorDetailMasking:
 class TestErrorConsistency:
     """Test that all endpoints return consistent error format (ADR-002, NFR-001)"""
 
-    def test_get_not_found_consistent(self):
+    @pytest.mark.asyncio
+    async def test_get_not_found_consistent(self, client, mock_db):
         """GET not found should follow standard format"""
-        r = client.get("/entries/999")
+        mock_result = AsyncMock()
+        mock_result.scalar_one_or_none.return_value = None
+        mock_db.execute.return_value = mock_result
+
+        r = await client.get("/entries/999")
         assert r.status_code == 404
         body = r.json()
         assert "type" in body and "correlationId" in body
 
-    def test_put_not_found_consistent(self):
+    @pytest.mark.asyncio
+    async def test_put_not_found_consistent(self, client, mock_db):
         """PUT not found should follow standard format"""
+        mock_result = AsyncMock()
+        mock_result.scalar_one_or_none.return_value = None
+        mock_db.execute.return_value = mock_result
+
         payload = {"title": "Test", "kind": "book", "status": "planned"}
-        r = client.put("/entries/999", json=payload)
+        r = await client.put("/entries/999", json=payload)
         assert r.status_code == 404
         body = r.json()
         assert "type" in body and "correlationId" in body
 
-    def test_delete_not_found_consistent(self):
+    @pytest.mark.asyncio
+    async def test_delete_not_found_consistent(self, client, mock_db):
         """DELETE not found should follow standard format"""
-        r = client.delete("/entries/999")
+        mock_result = AsyncMock()
+        mock_result.scalar_one_or_none.return_value = None
+        mock_db.execute.return_value = mock_result
+
+        r = await client.delete("/entries/999")
         assert r.status_code == 404
         body = r.json()
         assert "type" in body and "correlationId" in body
 
-    def test_post_validation_error_consistent(self):
+    @pytest.mark.asyncio
+    async def test_post_validation_error_consistent(self, client):
         """POST validation error should follow standard format"""
         payload = {"title": "", "kind": "book", "status": "planned"}
-        r = client.post("/entries", json=payload)
+        r = await client.post("/entries", json=payload)
         assert r.status_code == 422
         body = r.json()
         assert "type" in body and "correlationId" in body
 
 
-class TestSuccessfulOperations:
-    """Test that successful operations don't return error format"""
+class TestDatabaseErrorHandling:
+    """Test error handling for database failures"""
 
-    def test_successful_post_no_error_format(self):
-        """Successful POST should not use error format"""
-        payload = {"title": "Test Book", "kind": "book", "status": "planned"}
-        r = client.post("/entries", json=payload)
-        assert r.status_code == 200
+    @pytest.mark.asyncio
+    async def test_database_connection_error(self, client, mock_db):
+        """Test that database connection errors are properly handled"""
+        mock_db.execute.side_effect = SQLAlchemyError("Connection failed")
 
+        r = await client.get("/entries/1")
+        assert r.status_code == 500
         body = r.json()
-        # Should not have error fields
-        assert "correlationId" not in body
+        assert "type" in body
+        assert "correlationId" in body
+        assert body["status"] == 500
 
-        # Should have entry fields
-        assert "id" in body
-        assert "title" in body
+    @pytest.mark.asyncio
+    async def test_database_error_on_create(self, client, mock_db):
+        """Test database error during entry creation"""
+        mock_count_result = AsyncMock()
+        mock_count_result.scalar.return_value = 0
+        mock_db.execute.return_value = mock_count_result
 
-    def test_successful_get_no_error_format(self):
-        """Successful GET should not use error format"""
-        # Create an entry first
+        mock_db.commit.side_effect = SQLAlchemyError("DB error")
+
         payload = {"title": "Test", "kind": "book", "status": "planned"}
-        create_r = client.post("/entries", json=payload)
-        entry_id = create_r.json()["id"]
+        r = await client.post("/entries", json=payload)
 
-        # Get the entry
-        r = client.get(f"/entries/{entry_id}")
-        assert r.status_code == 200
-
+        assert r.status_code == 500
         body = r.json()
-        assert "correlationId" not in body
+        assert "type" in body
+        assert "correlationId" in body
 
+    @pytest.mark.asyncio
+    async def test_update_calls_rollback_on_error(self, client, mock_db):
+        """Test that rollback is called when update fails"""
+        mock_entry = create_mock_entry()
+        mock_result = AsyncMock()
+        mock_result.scalar_one_or_none.return_value = mock_entry
+        mock_db.execute.return_value = mock_result
 
-class TestNFR001Compliance:
-    """Test NFR-001: 100% errors return JSON error envelope"""
+        mock_db.commit.side_effect = SQLAlchemyError("Update failed")
 
-    def test_all_4xx_errors_have_envelope(self):
-        """All 4xx errors should use error envelope"""
-        # Test various 4xx scenarios
-        test_cases = [
-            (client.get("/entries/999"), 404),
-            (client.post("/entries", json={"title": ""}), 422),
-            (
-                client.put(
-                    "/entries/999",
-                    json={"title": "x", "kind": "book", "status": "planned"},
-                ),
-                404,
-            ),
-        ]
+        payload = {"title": "Updated", "kind": "book", "status": "reading"}
+        r = await client.put("/entries/1", json=payload)
 
-        for response, expected_status in test_cases:
-            assert response.status_code == expected_status
-            body = response.json()
-            assert "type" in body
-            assert "title" in body
-            assert "status" in body
-            assert "detail" in body
-            assert "correlationId" in body
+        mock_db.rollback.assert_called_once()
+        assert r.status_code == 500

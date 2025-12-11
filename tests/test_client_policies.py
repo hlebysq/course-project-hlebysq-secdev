@@ -2,12 +2,21 @@
 ADR-003: Client Policies Tests
 """
 
+from unittest.mock import patch
+
 import httpx
-from fastapi.testclient import TestClient
+import pytest
+from httpx import ASGITransport, AsyncClient
 
 from app.main import app
 
-client = TestClient(app)
+
+@pytest.fixture
+async def client():
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as ac:
+        yield ac
 
 
 class FakeResponse:
@@ -33,40 +42,41 @@ class FakeClient:
         return item
 
 
-def test_fetch_valid_url_accepted(monkeypatch):
+@pytest.mark.asyncio
+async def test_fetch_valid_url_accepted(client):
     fake = FakeClient([FakeResponse(200, b"Hello world")])
 
     async def fake_get_client():
         return fake
 
-    monkeypatch.setattr("app.main.get_http_client", fake_get_client)
+    with patch("app.main.get_http_client", fake_get_client):
+        r = await client.post("/fetch", json={"url": "http://example.com/"})
+        assert r.status_code == 200
+        data = r.json()
+        assert data["status"] == 200
+        assert "Hello world" in data["content_snippet"]
 
-    r = client.post("/fetch", json={"url": "http://example.com/"})
-    assert r.status_code == 200
-    data = r.json()
-    assert data["status"] == 200
-    assert "Hello world" in data["content_snippet"]
 
-
-def test_fetch_timeout_then_success_retries(monkeypatch):
+@pytest.mark.asyncio
+async def test_fetch_timeout_then_success_retries(client):
     seq = [httpx.ReadTimeout("read timeout"), FakeResponse(200, b"Recovered")]
     fake = FakeClient(seq)
 
     async def fake_get_client():
         return fake
 
-    monkeypatch.setattr("app.main.get_http_client", fake_get_client)
+    with patch("app.main.get_http_client", fake_get_client):
+        r = await client.post("/fetch", json={"url": "http://example.com/"})
+        assert r.status_code == 200
+        data = r.json()
+        assert data["status"] == 200
+        assert "Recovered" in data["content_snippet"]
+        assert fake.calls >= 2
 
-    r = client.post("/fetch", json={"url": "http://example.com/"})
-    assert r.status_code == 200
-    data = r.json()
-    assert data["status"] == 200
-    assert "Recovered" in data["content_snippet"]
-    assert fake.calls >= 2
 
-
-def test_fetch_private_ip_blocked():
-    r = client.post("/fetch", json={"url": "http://127.0.0.1/secret"})
+@pytest.mark.asyncio
+async def test_fetch_private_ip_blocked(client):
+    r = await client.post("/fetch", json={"url": "http://127.0.0.1/secret"})
     assert r.status_code == 422
     body = r.json()
     assert "local" in body["detail"].lower() or "127.0.0.1" in body["detail"]
