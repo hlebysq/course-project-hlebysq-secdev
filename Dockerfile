@@ -1,26 +1,47 @@
-# Build stage
-FROM python:3.11-slim AS build
+# ===== Build stage =====
+FROM python:3.11.9-slim@sha256:7cd0079a9bd8800c81632d65251048fc2848bf9afda542224b1b10e0cae45575 AS build
 WORKDIR /app
-COPY requirements.txt requirements-dev.txt ./
-RUN pip install --no-cache-dir -r requirements.txt -r requirements-dev.txt
+
+COPY requirements.txt ./
+
+RUN pip wheel --no-cache-dir -r requirements.txt -w /wheels
+
+# ===== Test stage =====
+FROM python:3.11.9-slim@sha256:7cd0079a9bd8800c81632d65251048fc2848bf9afda542224b1b10e0cae45575 AS test
+WORKDIR /app
+
 COPY . .
-RUN mkdir -p alembic/versions
-RUN pytest -q
-# Runtime stage
-FROM python:3.11-slim
+COPY requirements.txt requirements-dev.txt ./
+
+RUN pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir -r requirements-dev.txt \
+    && mkdir -p alembic/versions \
+    && pytest -q
+
+# ===== Runtime stage =====
+FROM python:3.11.9-slim@sha256:7cd0079a9bd8800c81632d65251048fc2848bf9afda542224b1b10e0cae45575 AS runtime
 WORKDIR /app
 
-RUN groupadd -r appuser -g 1001 && \
-    useradd -r -u 1001 -g appuser appuser && \
-    mkdir -p alembic/versions && \
-    chown -R appuser:appuser alembic/versions
+# hadolint ignore=DL3008
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl ca-certificates && \
+    rm -rf /var/lib/apt/lists/* && \
+    groupadd -r appuser -g 1001 && \
+    useradd -r -u 1001 -g appuser appuser
 
-COPY --from=build /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
-COPY --from=build /usr/local/bin /usr/local/bin
-COPY --from=build /app /app
+COPY --from=build /wheels /wheels
+COPY requirements.txt ./
+RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.txt
+
+COPY --from=test /app /app
+
+RUN chown -R appuser:appuser /app
+
+USER appuser
+
+HEALTHCHECK --interval=10s --timeout=3s --retries=3 \
+    CMD curl -fs http://localhost:8000/health || exit 1
 
 EXPOSE 8000
-HEALTHCHECK CMD curl -f http://localhost:8000/health || exit 1
-USER appuser
 ENV PYTHONUNBUFFERED=1
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
