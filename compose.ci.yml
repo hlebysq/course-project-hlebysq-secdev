@@ -1,0 +1,16 @@
+services:
+  app-ci:
+    build: .
+    environment:
+      DATABASE_URL: postgresql://postgres:password@host.docker.internal:5432/secdev_app
+      POSTGRES_HOST: host.docker.internal
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: secdev_app
+    network_mode: bridge
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
