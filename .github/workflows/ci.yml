@@ -19,8 +19,6 @@ jobs:
           POSTGRES_DB: secdev_app
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: password
-        ports:
-          - 5432:5432
         options: >-
           --health-cmd "pg_isready -U postgres"
           --health-interval 5s
@@ -124,8 +122,7 @@ jobs:
           STATUS=000
           until [ $i -ge $MAX_RETRIES ]
           do
-            # обращаемся к контейнеру напрямую, через app:8000 внутри сети
-            STATUS=$(docker compose exec -T app curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/health || echo "000")
+            STATUS=$(docker compose exec -T app-ci curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/health || echo "000")
             if [ "$STATUS" -eq 200 ]; then
               echo "Service healthy"
               break
