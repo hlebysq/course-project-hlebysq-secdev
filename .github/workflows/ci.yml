@@ -19,6 +19,8 @@ jobs:
           POSTGRES_DB: secdev_app
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: password
+        ports:
+          - 5432:5432
         options: >-
           --health-cmd "pg_isready -U postgres"
           --health-interval 5s
