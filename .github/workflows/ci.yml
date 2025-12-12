@@ -12,21 +12,6 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    services:
-      db:
-        image: postgres:15
-        env:
-          POSTGRES_DB: secdev_app
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: password
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 5
-
     steps:
       - uses: actions/checkout@v4
 
@@ -45,16 +30,43 @@ jobs:
           ruff check --output-format=github .
           black --check .
           isort --check-only .
+
       - name: Prepare .env for CI
         run: cp .env.example .env
 
       - name: Tests
-        run: pytest -q
+        run: |
+          docker run -d --name test-db \
+            -e POSTGRES_DB=secdev_app \
+            -e POSTGRES_USER=postgres \
+            -e POSTGRES_PASSWORD=password \
+            -p 5432:5432 \
+            postgres:15
+
+          # Ждем готовности БД
+          echo "Waiting for test database..."
+          for i in {1..30}; do
+            if docker exec test-db pg_isready -U postgres > /dev/null 2>&1; then
+              echo "Test database is ready"
+              break
+            fi
+            if [ $i -eq 30 ]; then
+              echo "Test database failed to become ready"
+              docker logs test-db
+              exit 1
+            fi
+            sleep 2
+          done
+
+          # Запускаем тесты
+          pytest -q
+
+          # Останавливаем и удаляем БД
+          docker stop test-db
+          docker rm test-db
 
       - name: Pre-commit (all files)
         run: pre-commit run --all-files
-
-
 
       - name: Lint Dockerfile
         uses: hadolint/hadolint-action@v3.1.0
@@ -119,28 +131,50 @@ jobs:
           docker compose -f compose.ci.yml build --no-cache
           docker compose -f compose.ci.yml up -d
 
+          sleep 5
+
+          echo "=== Container status ==="
+          docker compose -f compose.ci.yml ps
+
+          echo "=== App logs ==="
+          docker compose -f compose.ci.yml logs app-ci
+
+          echo "=== DB logs ==="
+          docker compose -f compose.ci.yml logs db
+
+          # Проверяем healthcheck приложения
           MAX_RETRIES=40
           i=0
           STATUS=000
           until [ $i -ge $MAX_RETRIES ]
           do
+            if ! docker compose -f compose.ci.yml ps app-ci | grep -q "Up"; then
+              echo "Container stopped running!"
+              echo "=== Full logs ==="
+              docker compose -f compose.ci.yml logs
+              docker compose -f compose.ci.yml down --volumes --remove-orphans
+              exit 1
+            fi
+
             STATUS=$(docker compose -f compose.ci.yml exec -T app-ci curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/health || echo "000")
             if [ "$STATUS" -eq 200 ]; then
-              echo "Service healthy"
+              echo "Service healthy!"
               break
             fi
             i=$((i+1))
-            echo "Waiting for service... ($i/$MAX_RETRIES)"
+            echo "Waiting for service... ($i/$MAX_RETRIES) Status: $STATUS"
             sleep 3
           done
 
           if [ "$STATUS" -ne 200 ]; then
             echo "Service did not become healthy"
+            echo "=== Final logs ==="
             docker compose -f compose.ci.yml logs --no-prefix --tail=200
             docker compose -f compose.ci.yml down --volumes --remove-orphans
             exit 1
           fi
 
+          echo "Integration test passed!"
           docker compose -f compose.ci.yml down --volumes --remove-orphans
 
       - name: Cleanup .env
