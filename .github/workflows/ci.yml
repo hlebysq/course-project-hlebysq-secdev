@@ -94,6 +94,7 @@ jobs:
 
       - name: Generate SBOM with Syft
         run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
           IMAGE_NAME=secdev-app:ci
           syft $IMAGE_NAME -o json > sbom.json
         continue-on-error: true
@@ -106,6 +107,7 @@ jobs:
 
       - name: Scan image with Grype
         run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
           IMAGE_NAME=secdev-app:ci
           grype $IMAGE_NAME -o json > grype-report.json
         continue-on-error: true
