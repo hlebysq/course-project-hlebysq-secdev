@@ -38,6 +38,10 @@ jobs:
           isort --check-only .
         timeout-minutes: 2
 
+      - name: Prepare .env for CI
+        run: cp .env.example .env
+        timeout-minutes: 1
+
       - name: Tests
         run: |
           docker run -d --name test-db \
@@ -215,3 +219,8 @@ jobs:
           echo "Integration test passed!"
           docker compose -f compose.ci.yml down --volumes --remove-orphans
         timeout-minutes: 10
+
+      - name: Cleanup .env
+        if: always()
+        run: rm -f .env
+        timeout-minutes: 1
