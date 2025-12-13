@@ -1,7 +1,21 @@
 services:
   app:
     build: .
-    env_file: .env
+    environment:
+      APP_ENV: ${APP_ENV}
+      LOG_LEVEL: ${LOG_LEVEL}
+      DATABASE_URL: ${DATABASE_URL}
+      POSTGRES_HOST: ${POSTGRES_HOST}
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      SQL_DEBUG: ${SQL_DEBUG}
+      OUTGOING_TIMEOUT_CONNECT: ${OUTGOING_TIMEOUT_CONNECT}
+      OUTGOING_TIMEOUT_READ: ${OUTGOING_TIMEOUT_READ}
+      OUTGOING_MAX_RETRIES: ${OUTGOING_MAX_RETRIES}
+      OUTGOING_MAX_RESPONSE_BYTES: ${OUTGOING_MAX_RESPONSE_BYTES}
+      OUTGOING_MAX_CONN: ${OUTGOING_MAX_CONN}
     ports:
       - "8000:8000"
     depends_on:
@@ -16,7 +30,10 @@ services:
 
   db:
     image: postgres:15
-    env_file: .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     ports:
       - "5432:5432"
     volumes:
